@@ -54,9 +54,15 @@ def download_youtube_audio(url: str) -> tuple[list[str], dict]:
     cookie_path = get_cookies_filepath()
 
     ydl_opts = {
-        # Fallback to general best format if bestaudio isn't directly available
         "format": "ba/b",
         "outtmpl": out_template,
+        # Override client types to bypass Cloud IP / SABR restrictions
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios"]
+            }
+        },
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
