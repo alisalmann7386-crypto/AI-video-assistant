@@ -47,19 +47,20 @@ def get_cookies_filepath() -> str | None:
 
 
 def download_youtube_audio(url: str) -> tuple[list[str], dict]:
-    """Downloads audio from YouTube bypassing Cloud IP blocks using modern client extractors."""
+    """Downloads audio from YouTube bypassing Cloud IP blocks and missing format errors."""
     output_dir = tempfile.mkdtemp()
     out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
     
     cookie_path = get_cookies_filepath()
 
     ydl_opts = {
-        "format": "ba/b",
+        # Allow best overall format or best audio stream so fallback always works
+        "format": "bestaudio/best",
         "outtmpl": out_template,
-        # Force clients that bypass Cloud IP 403 blocks (Android Creator & TV Embedded)
+        # Use mweb / ios client mix to preserve format availability while bypassing 403s
         "extractor_args": {
             "youtube": {
-                "player_client": ["android_creator", "tv_embedded", "ios"],
+                "player_client": ["mweb", "ios", "android"],
                 "skip": ["dash", "hls"]
             }
         },
