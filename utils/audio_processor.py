@@ -54,7 +54,8 @@ def download_youtube_audio(url: str) -> tuple[list[str], dict]:
     cookie_path = get_cookies_filepath()
 
     ydl_opts = {
-        "format": "ba/ba*",
+        # Fallback to general best format if bestaudio isn't directly available
+        "format": "ba/b",
         "outtmpl": out_template,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
@@ -66,7 +67,6 @@ def download_youtube_audio(url: str) -> tuple[list[str], dict]:
         "nocheckcertificate": True,
     }
 
-    # Pass the temporary cookie file path to yt-dlp if available
     if cookie_path:
         ydl_opts["cookiefile"] = cookie_path
 
@@ -76,7 +76,7 @@ def download_youtube_audio(url: str) -> tuple[list[str], dict]:
             filename = ydl.prepare_filename(info)
             audio_filepath = os.path.splitext(filename)[0] + ".mp3"
 
-            duration_sec = info.get("duration", 0)
+            duration_sec = info.get("duration", 0) or 0
             metadata = {
                 "title": info.get("title", "YouTube Video"),
                 "channel": info.get("uploader", "Unknown Channel"),
@@ -89,7 +89,6 @@ def download_youtube_audio(url: str) -> tuple[list[str], dict]:
         return chunks, metadata
 
     finally:
-        # Clean up temporary cookie file after download completes
         if cookie_path and os.path.exists(cookie_path):
             os.remove(cookie_path)
 
