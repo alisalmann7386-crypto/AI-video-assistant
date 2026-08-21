@@ -1,12 +1,12 @@
 import os
 import requests
 from typing import List, Dict, Any, Optional
-import whisper
 from pydub import AudioSegment
+from groq import Groq
 
 
 def format_timestamp(seconds: float) -> str:
-    """Converts seconds into a human-readable HH:MM:SS or MM:SS format."""
+    """Converts seconds into HH:MM:SS or MM:SS format."""
     seconds = int(seconds)
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
@@ -16,7 +16,7 @@ def format_timestamp(seconds: float) -> str:
 
 
 def get_audio_duration(file_path: str) -> float:
-    """Helper function to get the exact duration of an audio file in seconds."""
+    """Gets duration of an audio file in seconds."""
     try:
         audio = AudioSegment.from_file(file_path)
         return len(audio) / 1000.0
@@ -24,31 +24,54 @@ def get_audio_duration(file_path: str) -> float:
         return 0.0
 
 
-# ── Local OpenAI Whisper Engine ──────────────────────────────────────────────
-def transcribe_chunk_whisper(
-    chunk_path: str, 
-    model: Any, 
-    time_offset: float = 0.0,
-    task: str = "transcribe"
+# ── Groq API Engine (Fast Cloud Whisper) ──────────────────────────────────────
+def transcribe_chunk_groq(
+    chunk_path: str,
+    api_key: str,
+    time_offset: float = 0.0
 ) -> tuple[str, list[dict]]:
-    """Transcribes a single audio chunk using local Whisper."""
-    result = model.transcribe(chunk_path, task=task)
+    """Transcribes audio chunk via Groq Cloud Whisper API."""
+    client = Groq(api_key=api_key)
     
-    chunk_text = result.get("text", "").strip()
+    with open(chunk_path, "rb") as file:
+        transcription = client.audio.transcriptions.create(
+            file=(os.path.basename(chunk_path), file.read()),
+            model="whisper-large-v3",
+            response_format="verbose_json"
+        )
+
+    chunk_text = transcription.text.strip()
     segments = []
-    
-    for seg in result.get("segments", []):
-        start_sec = seg["start"] + time_offset
-        end_sec = seg["end"] + time_offset
-        
+
+    # Parse segments with timestamp offsets
+    raw_segments = getattr(transcription, "segments", [])
+    if raw_segments:
+        for seg in raw_segments:
+            # Handle dictionary or object response from SDK
+            start_val = seg.get("start", 0.0) if isinstance(seg, dict) else getattr(seg, "start", 0.0)
+            end_val = seg.get("end", 0.0) if isinstance(seg, dict) else getattr(seg, "end", 0.0)
+            text_val = seg.get("text", "") if isinstance(seg, dict) else getattr(seg, "text", "")
+
+            start_sec = start_val + time_offset
+            end_sec = end_val + time_offset
+
+            segments.append({
+                "start": format_timestamp(start_sec),
+                "end": format_timestamp(end_sec),
+                "start_raw": start_sec,
+                "end_raw": end_sec,
+                "text": text_val.strip()
+            })
+    else:
+        duration = get_audio_duration(chunk_path)
         segments.append({
-            "start": format_timestamp(start_sec),
-            "end": format_timestamp(end_sec),
-            "start_raw": start_sec,
-            "end_raw": end_sec,
-            "text": seg["text"].strip()
+            "start": format_timestamp(time_offset),
+            "end": format_timestamp(time_offset + duration),
+            "start_raw": time_offset,
+            "end_raw": time_offset + duration,
+            "text": chunk_text
         })
-        
+
     return chunk_text, segments
 
 
@@ -59,7 +82,7 @@ def transcribe_chunk_sarvam(
     time_offset: float = 0.0,
     mode: str = "transcribe"
 ) -> tuple[str, list[dict]]:
-    """Transcribes a single audio chunk using Sarvam AI REST API."""
+    """Transcribes audio chunk using Sarvam AI REST API."""
     url = "https://api.sarvam.ai/speech-to-text"
     headers = {"api-subscription-key": api_key}
     
@@ -108,55 +131,51 @@ def transcribe_chunk_sarvam(
     return chunk_text, segments
 
 
-# ── Processing Engine ────────────────────────────────────────────────────────
+# ── Orchestrator Engine ───────────────────────────────────────────────────────
 def process_transcription(
     chunks: List[str],
-    provider: str = "whisper",
-    model_size: str = "base",
-    translate_to_english: bool = False,
-    sarvam_api_key: Optional[str] = None
+    provider: str = "groq",
+    translate_to_english: bool = False
 ) -> Dict[str, Any]:
-    """Main orchestrator function to transcribe audio chunks."""
+    """Orchestrates API-based transcriptions."""
     full_text_list = []
     all_segments = []
     cumulative_offset = 0.0
-    
-    whisper_model = None
-    if provider == "whisper":
-        whisper_model = whisper.load_model(model_size)
-        
+
+    groq_key = os.getenv("GROQ_API_KEY")
+    sarvam_key = os.getenv("SARVAM_API_KEY")
+
     for chunk_path in chunks:
         if not os.path.exists(chunk_path):
             continue
-            
+
         if provider == "sarvam":
-            if not sarvam_api_key:
-                sarvam_api_key = os.getenv("SARVAM_API_KEY")
-                if not sarvam_api_key:
-                    raise ValueError("SARVAM_API_KEY missing. Provide it or set it in your .env file.")
+            if not sarvam_key:
+                raise ValueError("SARVAM_API_KEY missing. Set it in .env or Streamlit Secrets.")
             
             mode = "translate" if translate_to_english else "transcribe"
             chunk_text, segments = transcribe_chunk_sarvam(
                 chunk_path=chunk_path,
-                api_key=sarvam_api_key,
+                api_key=sarvam_key,
                 time_offset=cumulative_offset,
                 mode=mode
             )
         else:
-            task = "translate" if translate_to_english else "transcribe"
-            chunk_text, segments = transcribe_chunk_whisper(
+            if not groq_key:
+                raise ValueError("GROQ_API_KEY missing. Set it in .env or Streamlit Secrets.")
+
+            chunk_text, segments = transcribe_chunk_groq(
                 chunk_path=chunk_path,
-                model=whisper_model,
-                time_offset=cumulative_offset,
-                task=task
+                api_key=groq_key,
+                time_offset=cumulative_offset
             )
-            
+
         if chunk_text:
             full_text_list.append(chunk_text)
             all_segments.extend(segments)
-            
+
         cumulative_offset += get_audio_duration(chunk_path)
-        
+
     return {
         "full_text": " ".join(full_text_list),
         "segments": all_segments
@@ -165,13 +184,10 @@ def process_transcription(
 
 # ── App Wrapper ──────────────────────────────────────────────────────────────
 def transcribe_all(chunks: List[str], language: str = "english") -> Dict[str, Any]:
-    """
-    Direct function import required by app.py.
-    Maps language options to the transcription provider.
-    """
-    provider = "sarvam" if language.lower() in ["hinglish", "sarvam"] else "whisper"
+    """App wrapper called by app.py."""
+    provider = "sarvam" if language.lower() in ["hinglish", "sarvam"] else "groq"
     translate_flag = True if language.lower() == "hinglish" else False
-    
+
     return process_transcription(
         chunks=chunks,
         provider=provider,
