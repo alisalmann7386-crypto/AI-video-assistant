@@ -8,7 +8,7 @@ numpy>=1.26.0
 requests>=2.32.0
 
 # ── Audio & Video Processing ──────────────────────────────────────────────────
-git+https://github.com/yt-dlp/yt-dlp.git@release#egg=yt-dlp
+yt-dlp>=2024.03.10
 pydub>=0.25.1
 
 # ── Cloud APIs & SDKs ─────────────────────────────────────────────────────────
