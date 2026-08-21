@@ -2,6 +2,7 @@ import os
 import re
 import tempfile
 import yt_dlp
+import streamlit as st
 from pydub import AudioSegment
 
 
@@ -12,15 +13,15 @@ def is_youtube_url(url: str) -> bool:
 
 
 def split_audio_into_chunks(audio_path: str, chunk_length_ms: int = 10 * 60 * 1000) -> list[str]:
-    """Splits an audio file into smaller chunks (default 10 minutes) to fit API payload limits."""
+    """Splits an audio file into smaller chunks (default 10 minutes) for API compatibility."""
     audio = AudioSegment.from_file(audio_path)
-    chunks = []
     
     if len(audio) <= chunk_length_ms:
         return [audio_path]
 
     base_dir = os.path.dirname(audio_path)
     base_name = os.path.splitext(os.path.basename(audio_path))[0]
+    chunks = []
 
     for i, chunk in enumerate(audio[::chunk_length_ms]):
         chunk_path = os.path.join(base_dir, f"{base_name}_chunk_{i}.mp3")
@@ -30,13 +31,27 @@ def split_audio_into_chunks(audio_path: str, chunk_length_ms: int = 10 * 60 * 10
     return chunks
 
 
-def download_youtube_audio(url: str) -> tuple[list[str], dict]:
-    """Downloads audio from YouTube using yt-dlp with updated multi-client fallbacks
+def get_cookies_filepath() -> str | None:
+    """Reads YouTube cookies from Streamlit secrets and writes them to a temporary file."""
+    try:
+        if "YOUTUBE_COOKIES" in st.secrets and st.secrets["YOUTUBE_COOKIES"].strip():
+            temp_cookie_file = tempfile.NamedTemporaryFile(
+                mode="w+", delete=False, suffix=".txt"
+            )
+            temp_cookie_file.write(st.secrets["YOUTUBE_COOKIES"])
+            temp_cookie_file.close()
+            return temp_cookie_file.name
+    except Exception as e:
+        print(f"Warning: Could not read cookies from Streamlit secrets: {e}")
+    return None
 
-    to bypass HTTP 403 Forbidden errors on cloud host servers.
-    """
+
+def download_youtube_audio(url: str) -> tuple[list[str], dict]:
+    """Downloads audio from YouTube using yt-dlp with Streamlit Secrets cookies."""
     output_dir = tempfile.mkdtemp()
     out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
+    
+    cookie_path = get_cookies_filepath()
 
     ydl_opts = {
         "format": "ba/ba*",
@@ -46,59 +61,47 @@ def download_youtube_audio(url: str) -> tuple[list[str], dict]:
             "preferredcodec": "mp3",
             "preferredquality": "192",
         }],
-        # ── Updated 403 Fix: Multi-Client Fallback Strategy ────────────────────
-        "nocheckcertificate": True,
-        "ignoreerrors": False,
-        "logtostderr": False,
         "quiet": True,
         "no_warnings": True,
-        "source_address": "0.0.0.0",  # Force IPv4 connection
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android_vr", "web_embedded", "android", "ios", "tv"],
-                "player_skip": ["webpage", "configs"]
-            }
-        },
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/125.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
+        "nocheckcertificate": True,
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filename = ydl.prepare_filename(info)
-        
-        # Audio gets converted to .mp3 by postprocessor
-        audio_filepath = os.path.splitext(filename)[0] + ".mp3"
+    # Pass the temporary cookie file path to yt-dlp if available
+    if cookie_path:
+        ydl_opts["cookiefile"] = cookie_path
 
-        duration_sec = info.get("duration", 0)
-        metadata = {
-            "title": info.get("title", "YouTube Video"),
-            "channel": info.get("uploader", "Unknown Channel"),
-            "duration": f"{duration_sec // 60}m {duration_sec % 60}s",
-            "thumbnail": info.get("thumbnail", ""),
-            "url": url
-        }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            audio_filepath = os.path.splitext(filename)[0] + ".mp3"
 
-    chunks = split_audio_into_chunks(audio_filepath)
-    return chunks, metadata
+            duration_sec = info.get("duration", 0)
+            metadata = {
+                "title": info.get("title", "YouTube Video"),
+                "channel": info.get("uploader", "Unknown Channel"),
+                "duration": f"{duration_sec // 60}m {duration_sec % 60}s",
+                "thumbnail": info.get("thumbnail", ""),
+                "url": url
+            }
+
+        chunks = split_audio_into_chunks(audio_filepath)
+        return chunks, metadata
+
+    finally:
+        # Clean up temporary cookie file after download completes
+        if cookie_path and os.path.exists(cookie_path):
+            os.remove(cookie_path)
 
 
 def process_local_file(file_path: str) -> tuple[list[str], dict]:
-    """Processes locally uploaded audio or video files into MP3 format and chunks them."""
+    """Processes locally uploaded audio/video files into MP3 format and chunks them."""
     file_name = os.path.basename(file_path)
     base_name, ext = os.path.splitext(file_name)
     ext = ext.lower().replace(".", "")
 
     output_path = os.path.join(os.path.dirname(file_path), f"{base_name}_converted.mp3")
 
-    # Extract audio using pydub
     audio = AudioSegment.from_file(file_path, format=ext if ext != "mkv" else "matroska")
     audio.export(output_path, format="mp3")
 
@@ -116,10 +119,7 @@ def process_local_file(file_path: str) -> tuple[list[str], dict]:
 
 
 def process_input(source: str) -> tuple[list[str], dict]:
-    """Main routing function that takes either a YouTube URL or local file path
-
-    and returns a list of chunked audio file paths along with video/audio metadata.
-    """
+    """Main routing function."""
     if is_youtube_url(source):
         return download_youtube_audio(source)
     else:
