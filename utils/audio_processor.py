@@ -11,36 +11,63 @@ def is_youtube_url(url: str) -> bool:
     return bool(re.match(youtube_regex, url))
 
 
-def download_youtube_audio(url: str) -> tuple[str, dict]:
-    """Downloads audio from YouTube using yt-dlp with mobile client overrides
+def split_audio_into_chunks(audio_path: str, chunk_length_ms: int = 10 * 60 * 1000) -> list[str]:
+    """Splits an audio file into smaller chunks (default 10 minutes) to fit API payload limits."""
+    audio = AudioSegment.from_file(audio_path)
+    chunks = []
+    
+    if len(audio) <= chunk_length_ms:
+        return [audio_path]
 
-    to prevent HTTP 403 Forbidden errors on cloud servers.
+    base_dir = os.path.dirname(audio_path)
+    base_name = os.path.splitext(os.path.basename(audio_path))[0]
+
+    for i, chunk in enumerate(audio[::chunk_length_ms]):
+        chunk_path = os.path.join(base_dir, f"{base_name}_chunk_{i}.mp3")
+        chunk.export(chunk_path, format="mp3")
+        chunks.append(chunk_path)
+
+    return chunks
+
+
+def download_youtube_audio(url: str) -> tuple[list[str], dict]:
+    """Downloads audio from YouTube using yt-dlp with updated multi-client fallbacks
+
+    to bypass HTTP 403 Forbidden errors on cloud host servers.
     """
     output_dir = tempfile.mkdtemp()
     out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
 
     ydl_opts = {
-        "format": "bestaudio/best",
+        "format": "ba/ba*",
         "outtmpl": out_template,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
             "preferredquality": "192",
         }],
-        # CRITICAL 403 FIX: Force yt-dlp to mimic mobile clients
+        # ── Updated 403 Fix: Multi-Client Fallback Strategy ────────────────────
+        "nocheckcertificate": True,
+        "ignoreerrors": False,
+        "logtostderr": False,
+        "quiet": True,
+        "no_warnings": True,
+        "source_address": "0.0.0.0",  # Force IPv4 connection
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios"]
+                "player_client": ["android_vr", "web_embedded", "android", "ios", "tv"],
+                "player_skip": ["webpage", "configs"]
             }
         },
         "http_headers": {
             "User-Agent": (
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
-            )
-        },
-        "quiet": True,
-        "no_warnings": True,
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -50,19 +77,21 @@ def download_youtube_audio(url: str) -> tuple[str, dict]:
         # Audio gets converted to .mp3 by postprocessor
         audio_filepath = os.path.splitext(filename)[0] + ".mp3"
 
+        duration_sec = info.get("duration", 0)
         metadata = {
             "title": info.get("title", "YouTube Video"),
             "channel": info.get("uploader", "Unknown Channel"),
-            "duration": f"{info.get('duration', 0) // 60}m {info.get('duration', 0) % 60}s",
+            "duration": f"{duration_sec // 60}m {duration_sec % 60}s",
             "thumbnail": info.get("thumbnail", ""),
             "url": url
         }
 
-    return audio_filepath, metadata
+    chunks = split_audio_into_chunks(audio_filepath)
+    return chunks, metadata
 
 
-def process_local_file(file_path: str) -> tuple[str, dict]:
-    """Processes locally uploaded audio or video files into MP3 format."""
+def process_local_file(file_path: str) -> tuple[list[str], dict]:
+    """Processes locally uploaded audio or video files into MP3 format and chunks them."""
     file_name = os.path.basename(file_path)
     base_name, ext = os.path.splitext(file_name)
     ext = ext.lower().replace(".", "")
@@ -82,13 +111,14 @@ def process_local_file(file_path: str) -> tuple[str, dict]:
         "url": None
     }
 
-    return output_path, metadata
+    chunks = split_audio_into_chunks(output_path)
+    return chunks, metadata
 
 
-def process_input(source: str) -> tuple[str, dict]:
+def process_input(source: str) -> tuple[list[str], dict]:
     """Main routing function that takes either a YouTube URL or local file path
 
-    and returns a single audio file path along with video/audio metadata.
+    and returns a list of chunked audio file paths along with video/audio metadata.
     """
     if is_youtube_url(source):
         return download_youtube_audio(source)
