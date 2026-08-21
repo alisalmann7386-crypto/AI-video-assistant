@@ -1,99 +1,96 @@
 import os
+import re
+import tempfile
 import yt_dlp
 from pydub import AudioSegment
 
-DOWNLOAD_DIR = 'downloades'
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+def is_youtube_url(url: str) -> bool:
+    """Checks if a string is a valid YouTube URL."""
+    youtube_regex = r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})'
+    return bool(re.match(youtube_regex, url))
+
 
 def download_youtube_audio(url: str) -> tuple[str, dict]:
+    """Downloads audio from YouTube using yt-dlp with mobile client overrides
+
+    to prevent HTTP 403 Forbidden errors on cloud servers.
     """
-    Downloads YouTube audio as WAV and extracts video metadata.
-    """
-    output_path = os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s")
-    
+    output_dir = tempfile.mkdtemp()
+    out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
+
     ydl_opts = {
         "format": "bestaudio/best",
-        "outtmpl": output_path,
+        "outtmpl": out_template,
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
-            "preferredcodec": "wav",
+            "preferredcodec": "mp3",
             "preferredquality": "192",
         }],
-        "quiet": True,
+        # CRITICAL 403 FIX: Force yt-dlp to mimic mobile clients
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web"]
+                "player_client": ["android", "ios"]
             }
         },
-        "nocheckcertificate": True,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+            )
+        },
+        "quiet": True,
+        "no_warnings": True,
     }
-    
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         filename = ydl.prepare_filename(info)
-        base, _ = os.path.splitext(filename)
-        wav_filename = f"{base}.wav"
-
-        # Format duration into MM:SS or HH:MM:SS
-        duration_sec = info.get("duration", 0)
-        hours, remainder = divmod(duration_sec, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        duration_str = f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes:02d}:{seconds:02d}"
+        
+        # Audio gets converted to .mp3 by postprocessor
+        audio_filepath = os.path.splitext(filename)[0] + ".mp3"
 
         metadata = {
             "title": info.get("title", "YouTube Video"),
             "channel": info.get("uploader", "Unknown Channel"),
+            "duration": f"{info.get('duration', 0) // 60}m {info.get('duration', 0) % 60}s",
             "thumbnail": info.get("thumbnail", ""),
-            "duration": duration_str,
             "url": url
         }
-        
-    return wav_filename, metadata
+
+    return audio_filepath, metadata
 
 
-def convert_to_wav(input_path: str) -> tuple[str, dict]:
-    """Converts local audio/video file and generates basic file metadata."""
-    output_path = os.path.splitext(input_path)[0] + "_converted.wav"
-    audio = AudioSegment.from_file(input_path)
-    audio = audio.set_channels(1).set_frame_rate(16000)
-    audio.export(output_path, format="wav")
+def process_local_file(file_path: str) -> tuple[str, dict]:
+    """Processes locally uploaded audio or video files into MP3 format."""
+    file_name = os.path.basename(file_path)
+    base_name, ext = os.path.splitext(file_name)
+    ext = ext.lower().replace(".", "")
+
+    output_path = os.path.join(os.path.dirname(file_path), f"{base_name}_converted.mp3")
+
+    # Extract audio using pydub
+    audio = AudioSegment.from_file(file_path, format=ext if ext != "mkv" else "matroska")
+    audio.export(output_path, format="mp3")
 
     duration_sec = int(len(audio) / 1000)
-    minutes, seconds = divmod(duration_sec, 60)
-    
     metadata = {
-        "title": os.path.basename(input_path),
-        "channel": "Local File Upload",
+        "title": base_name,
+        "channel": "Local Upload",
+        "duration": f"{duration_sec // 60}m {duration_sec % 60}s",
         "thumbnail": None,
-        "duration": f"{minutes:02d}:{seconds:02d}",
         "url": None
     }
+
     return output_path, metadata
 
 
-def chunk_audio(wav_path: str, chunk_minutes: int = 10) -> list:
-    audio = AudioSegment.from_wav(wav_path)
-    chunk_ms = chunk_minutes * 60 * 1000 
+def process_input(source: str) -> tuple[str, dict]:
+    """Main routing function that takes either a YouTube URL or local file path
 
-    chunks = []
-    for i, start in enumerate(range(0, len(audio), chunk_ms)):
-        chunk = audio[start: start + chunk_ms]
-        chunk_path = f"{wav_path}_chunk_{i}.wav"
-        chunk.export(chunk_path, format="wav")
-        chunks.append(chunk_path)
-    
-    return chunks
-
-
-def process_input(source: str) -> tuple[list, dict]:
-    """Returns a tuple containing (chunks_list, metadata_dict)."""
-    if source.startswith("http://") or source.startswith("https://"):
-        print("Detected YouTube URL. Downloading audio...")
-        wav_path, metadata = download_youtube_audio(source)
+    and returns a single audio file path along with video/audio metadata.
+    """
+    if is_youtube_url(source):
+        return download_youtube_audio(source)
     else:
-        print("Detected local file. Converting to WAV...")
-        wav_path, metadata = convert_to_wav(source)
-
-    print("Chunking audio...")
-    chunks = chunk_audio(wav_path)
-    return chunks, metadata
+        return process_local_file(source)
