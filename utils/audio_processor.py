@@ -47,7 +47,7 @@ def get_cookies_filepath() -> str | None:
 
 
 def download_youtube_audio(url: str) -> tuple[list[str], dict]:
-    """Downloads audio from YouTube using yt-dlp with Streamlit Secrets cookies."""
+    """Downloads audio from YouTube bypassing Cloud IP blocks using modern client extractors."""
     output_dir = tempfile.mkdtemp()
     out_template = os.path.join(output_dir, "%(id)s.%(ext)s")
     
@@ -56,13 +56,13 @@ def download_youtube_audio(url: str) -> tuple[list[str], dict]:
     ydl_opts = {
         "format": "ba/b",
         "outtmpl": out_template,
-        # Override client types to bypass Cloud IP / SABR restrictions
+        # Force clients that bypass Cloud IP 403 blocks (Android Creator & TV Embedded)
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios"]
+                "player_client": ["android_creator", "tv_embedded", "ios"],
+                "skip": ["dash", "hls"]
             }
         },
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
