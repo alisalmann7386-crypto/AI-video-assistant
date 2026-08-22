@@ -31,8 +31,8 @@ The system processes media links or local files, handles chunking and speech-to-
 |----------|---------|
 | **UI Framework** | Streamlit |
 | **Orchestration** | LangChain |
-| **Vector Database** | ChromaDB |
-| **Embeddings** | HuggingFace (`sentence-transformers`) |
+| **Vector Database** | FAISS |
+| **Embeddings** | MistralAIEmbeddings |
 | **Media Extraction** | `yt-dlp` & `pydub` (FFmpeg) |
 | **Supported Input** | YouTube URLs, Local Audio/Video Files |
 
@@ -43,7 +43,7 @@ The system processes media links or local files, handles chunking and speech-to-
 - Python 3.11
 - Streamlit
 - LangChain
-- ChromaDB
+- FAISS
 - yt-dlp
 - PyDub
 - Groq / Mistral AI / Google Gemini APIs
